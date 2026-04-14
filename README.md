@@ -40,7 +40,13 @@ To pin a specific version:
 xcaddy build --with github.com/JoschaP/caddy-dns-ionoscloud@v1.0.0
 ```
 
-Or use Docker:
+Or use the pre-built Docker image:
+
+```bash
+docker pull ghcr.io/joschap/caddy-dns-ionoscloud:latest
+```
+
+Or build your own:
 
 ```dockerfile
 FROM caddy:2-builder AS builder
@@ -141,7 +147,8 @@ Shorthand syntax:
 ```yaml
 services:
   caddy:
-    build: .
+    image: ghcr.io/joschap/caddy-dns-ionoscloud:latest
+    # Or build your own: build: .
     ports:
       - "80:80"
       - "443:443"
