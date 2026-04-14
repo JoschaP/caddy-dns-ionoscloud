@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/libdns/libdns"
 )
 

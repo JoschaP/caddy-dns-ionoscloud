@@ -135,13 +135,15 @@ func (p *Provider) doAPI(ctx context.Context, method, path string, body interfac
 // --- Zone lookup ---
 
 type apiZone struct {
-	ID       string `json:"id"`
-	ZoneName string `json:"zoneName"`
+	ID         string `json:"id"`
+	Properties struct {
+		ZoneName string `json:"zoneName"`
+	} `json:"properties"`
 }
 
 func (p *Provider) findZoneID(ctx context.Context, zone string) (string, error) {
 	zone = strings.TrimSuffix(zone, ".")
-	data, err := p.doAPI(ctx, http.MethodGet, "/dns/v1/zones", nil)
+	data, err := p.doAPI(ctx, http.MethodGet, "/zones", nil)
 	if err != nil {
 		return "", err
 	}
@@ -150,7 +152,7 @@ func (p *Provider) findZoneID(ctx context.Context, zone string) (string, error) 
 		return "", err
 	}
 	for _, z := range resp.Items {
-		if strings.TrimSuffix(z.ZoneName, ".") == zone {
+		if strings.TrimSuffix(z.Properties.ZoneName, ".") == zone {
 			return z.ID, nil
 		}
 	}
@@ -160,24 +162,37 @@ func (p *Provider) findZoneID(ctx context.Context, zone string) (string, error) 
 // --- Record types ---
 
 type apiRecord struct {
-	ID      string `json:"id,omitempty"`
-	Name    string `json:"name"`
-	Type    string `json:"type"`
-	Content string `json:"content"`
-	TTL     int    `json:"ttl"`
-	Enabled bool   `json:"enabled"`
+	ID         string `json:"id,omitempty"`
+	Properties struct {
+		Name     string `json:"name"`
+		Type     string `json:"type"`
+		Content  string `json:"content"`
+		TTL      int    `json:"ttl"`
+		Enabled  bool   `json:"enabled"`
+		Priority int    `json:"priority"`
+	} `json:"properties"`
+}
+
+type apiRecordCreate struct {
+	Properties struct {
+		Name     string `json:"name"`
+		Type     string `json:"type"`
+		Content  string `json:"content"`
+		TTL      int    `json:"ttl"`
+		Enabled  bool   `json:"enabled"`
+	} `json:"properties"`
 }
 
 func toLibdns(r apiRecord, zone string) libdns.Record {
 	zone = strings.TrimSuffix(zone, ".")
-	name := strings.TrimSuffix(r.Name, "."+zone)
+	name := strings.TrimSuffix(r.Properties.Name, "."+zone)
 	name = strings.TrimSuffix(name, ".")
 	return libdns.Record{
 		ID:    r.ID,
-		Type:  r.Type,
+		Type:  r.Properties.Type,
 		Name:  name,
-		Value: r.Content,
-		TTL:   time.Duration(r.TTL) * time.Second,
+		Value: r.Properties.Content,
+		TTL:   time.Duration(r.Properties.TTL) * time.Second,
 	}
 }
 
@@ -210,7 +225,7 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 		return nil, err
 	}
 
-	data, err := p.doAPI(ctx, http.MethodGet, fmt.Sprintf("/dns/v1/zones/%s/records", zoneID), nil)
+	data, err := p.doAPI(ctx, http.MethodGet, fmt.Sprintf("/zones/%s/records", zoneID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -239,14 +254,13 @@ func (p *Provider) AppendRecords(ctx context.Context, zone string, records []lib
 
 	var created []libdns.Record
 	for _, rec := range records {
-		body := apiRecord{
-			Name:    toFQDN(rec.Name, zone),
-			Type:    rec.Type,
-			Content: rec.Value,
-			TTL:     ttlOrDefault(rec.TTL),
-			Enabled: true,
-		}
-		data, err := p.doAPI(ctx, http.MethodPost, fmt.Sprintf("/dns/v1/zones/%s/records", zoneID), body)
+		body := apiRecordCreate{}
+		body.Properties.Name = toFQDN(rec.Name, zone)
+		body.Properties.Type = rec.Type
+		body.Properties.Content = rec.Value
+		body.Properties.TTL = ttlOrDefault(rec.TTL)
+		body.Properties.Enabled = true
+		data, err := p.doAPI(ctx, http.MethodPost, fmt.Sprintf("/zones/%s/records", zoneID), body)
 		if err != nil {
 			return created, err
 		}
@@ -270,7 +284,7 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns
 	}
 
 	// Fetch existing for matching
-	data, err := p.doAPI(ctx, http.MethodGet, fmt.Sprintf("/dns/v1/zones/%s/records", zoneID), nil)
+	data, err := p.doAPI(ctx, http.MethodGet, fmt.Sprintf("/zones/%s/records", zoneID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -282,18 +296,17 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns
 	var updated []libdns.Record
 	for _, rec := range records {
 		fqdn := toFQDN(rec.Name, zone)
-		body := apiRecord{
-			Name:    fqdn,
-			Type:    rec.Type,
-			Content: rec.Value,
-			TTL:     ttlOrDefault(rec.TTL),
-			Enabled: true,
-		}
+		body := apiRecordCreate{}
+		body.Properties.Name = fqdn
+		body.Properties.Type = rec.Type
+		body.Properties.Content = rec.Value
+		body.Properties.TTL = ttlOrDefault(rec.TTL)
+		body.Properties.Enabled = true
 
 		// Find existing by name+type
 		var id string
 		for _, e := range existing.Items {
-			if e.Name == fqdn && e.Type == rec.Type {
+			if e.Properties.Name == fqdn && e.Properties.Type == rec.Type {
 				id = e.ID
 				break
 			}
@@ -301,9 +314,9 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns
 
 		var respData []byte
 		if id != "" {
-			respData, err = p.doAPI(ctx, http.MethodPut, fmt.Sprintf("/dns/v1/zones/%s/records/%s", zoneID, id), body)
+			respData, err = p.doAPI(ctx, http.MethodPut, fmt.Sprintf("/zones/%s/records/%s", zoneID, id), body)
 		} else {
-			respData, err = p.doAPI(ctx, http.MethodPost, fmt.Sprintf("/dns/v1/zones/%s/records", zoneID), body)
+			respData, err = p.doAPI(ctx, http.MethodPost, fmt.Sprintf("/zones/%s/records", zoneID), body)
 		}
 		if err != nil {
 			return updated, err
@@ -332,7 +345,7 @@ func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []lib
 	var existingRecords []apiRecord
 	for _, r := range records {
 		if r.ID == "" {
-			data, err := p.doAPI(ctx, http.MethodGet, fmt.Sprintf("/dns/v1/zones/%s/records", zoneID), nil)
+			data, err := p.doAPI(ctx, http.MethodGet, fmt.Sprintf("/zones/%s/records", zoneID), nil)
 			if err != nil {
 				return nil, err
 			}
@@ -349,7 +362,7 @@ func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []lib
 		if id == "" {
 			fqdn := toFQDN(rec.Name, zone)
 			for _, e := range existingRecords {
-				if e.Name == fqdn && e.Type == rec.Type && e.Content == rec.Value {
+				if e.Properties.Name == fqdn && e.Properties.Type == rec.Type && e.Properties.Content == rec.Value {
 					id = e.ID
 					break
 				}
@@ -358,7 +371,7 @@ func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []lib
 				continue
 			}
 		}
-		_, err := p.doAPI(ctx, http.MethodDelete, fmt.Sprintf("/dns/v1/zones/%s/records/%s", zoneID, id), nil)
+		_, err := p.doAPI(ctx, http.MethodDelete, fmt.Sprintf("/zones/%s/records/%s", zoneID, id), nil)
 		if err != nil {
 			return deleted, err
 		}
