@@ -29,9 +29,11 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/libdns/libdns"
+	"go.uber.org/zap"
+	"golang.org/x/sync/singleflight"
 )
 
-const apiBase = "https://dns.de-fra.ionos.com"
+const defaultAPIBase = "https://dns.de-fra.ionos.com"
 
 func init() {
 	caddy.RegisterModule(&Provider{})
@@ -42,11 +44,18 @@ type Provider struct {
 	// APIToken is the IONOS Cloud API Bearer token with DNS permissions.
 	APIToken string `json:"api_token,omitempty"`
 
-	mu     sync.Mutex
-	client *http.Client
+	// APIEndpoint overrides the default IONOS Cloud DNS API URL.
+	// Leave empty to use the default (dns.de-fra.ionos.com).
+	APIEndpoint string `json:"api_endpoint,omitempty"`
+
+	logger      *zap.Logger
+	client      *http.Client
+	zones       map[string]string // zone name → zone ID cache
+	zonesCached time.Time         // when the cache was last populated
+	zonesMu     sync.RWMutex
+	zoneFlight  singleflight.Group // coalesces concurrent zone lookups
 }
 
-// CaddyModule returns the Caddy module information.
 func (*Provider) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "dns.providers.ionoscloud",
@@ -54,13 +63,18 @@ func (*Provider) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-// Provision validates the provider configuration.
+// Provision sets up the HTTP client, logger, and validates the API token.
 func (p *Provider) Provision(ctx caddy.Context) error {
+	p.logger = ctx.Logger()
 	p.APIToken = caddy.NewReplacer().ReplaceAll(p.APIToken, "")
 	if p.APIToken == "" {
 		return fmt.Errorf("ionoscloud: api_token is required")
 	}
+	if p.APIEndpoint == "" {
+		p.APIEndpoint = defaultAPIBase
+	}
 	p.client = &http.Client{Timeout: 30 * time.Second}
+	p.zones = make(map[string]string)
 	return nil
 }
 
@@ -69,7 +83,8 @@ func (p *Provider) Provision(ctx caddy.Context) error {
 //	ionoscloud [<api_token>]
 //
 //	ionoscloud {
-//	    api_token <token>
+//	    api_token    <token>
+//	    api_endpoint <url>
 //	}
 func (p *Provider) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
@@ -83,6 +98,11 @@ func (p *Provider) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				p.APIToken = d.Val()
+			case "api_endpoint":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				p.APIEndpoint = d.Val()
 			default:
 				return d.Errf("unrecognized option: %s", d.Val())
 			}
@@ -91,7 +111,14 @@ func (p *Provider) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	return nil
 }
 
-// --- HTTP client ---
+// apiError represents a structured error response from the IONOS Cloud DNS API.
+type apiError struct {
+	HTTPStatus int `json:"httpStatus"`
+	Messages   []struct {
+		ErrorCode string `json:"errorCode"`
+		Message   string `json:"message"`
+	} `json:"messages"`
+}
 
 func (p *Provider) doAPI(ctx context.Context, method, path string, body interface{}) ([]byte, error) {
 	var reqBody io.Reader
@@ -103,7 +130,7 @@ func (p *Provider) doAPI(ctx context.Context, method, path string, body interfac
 		reqBody = bytes.NewReader(b)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, apiBase+path, reqBody)
+	req, err := http.NewRequestWithContext(ctx, method, p.APIEndpoint+path, reqBody)
 	if err != nil {
 		return nil, err
 	}
@@ -120,13 +147,26 @@ func (p *Provider) doAPI(ctx context.Context, method, path string, body interfac
 	if err != nil {
 		return nil, err
 	}
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("ionoscloud: %s %s: %d %s", method, path, resp.StatusCode, string(data))
+		// Parse structured error if possible, never log raw body (may contain tokens)
+		var apiErr apiError
+		if json.Unmarshal(data, &apiErr) == nil && len(apiErr.Messages) > 0 {
+			msgs := make([]string, len(apiErr.Messages))
+			for i, m := range apiErr.Messages {
+				msgs[i] = m.Message
+			}
+			return nil, fmt.Errorf("ionoscloud: %s %s: %d %s", method, path, resp.StatusCode, strings.Join(msgs, "; "))
+		}
+		// Fallback: truncate raw body to avoid leaking sensitive data
+		rawBody := string(data)
+		if len(rawBody) > 200 {
+			rawBody = rawBody[:200] + "..."
+		}
+		return nil, fmt.Errorf("ionoscloud: %s %s: %d %s", method, path, resp.StatusCode, rawBody)
 	}
 	return data, nil
 }
-
-// --- Zone lookup ---
 
 type apiZone struct {
 	ID         string `json:"id"`
@@ -135,25 +175,54 @@ type apiZone struct {
 	} `json:"properties"`
 }
 
+const zoneCacheTTL = 1 * time.Hour
+
 func (p *Provider) findZoneID(ctx context.Context, zone string) (string, error) {
 	zone = strings.TrimSuffix(zone, ".")
-	data, err := p.doAPI(ctx, http.MethodGet, "/zones", nil)
+
+	// Check cache (valid for zoneCacheTTL)
+	p.zonesMu.RLock()
+	if id, ok := p.zones[zone]; ok && time.Since(p.zonesCached) < zoneCacheTTL {
+		p.zonesMu.RUnlock()
+		return id, nil
+	}
+	p.zonesMu.RUnlock()
+
+	// Coalesce concurrent cache misses into a single API call
+	_, err, _ := p.zoneFlight.Do("zones", func() (interface{}, error) {
+		p.logger.Debug("fetching zones from API")
+
+		data, err := p.doAPI(ctx, http.MethodGet, "/zones", nil)
+		if err != nil {
+			return nil, err
+		}
+		var resp struct{ Items []apiZone }
+		if err := json.Unmarshal(data, &resp); err != nil {
+			return nil, err
+		}
+
+		p.zonesMu.Lock()
+		p.zones = make(map[string]string, len(resp.Items))
+		for _, z := range resp.Items {
+			name := strings.TrimSuffix(z.Properties.ZoneName, ".")
+			p.zones[name] = z.ID
+		}
+		p.zonesCached = time.Now()
+		p.zonesMu.Unlock()
+		return nil, nil
+	})
 	if err != nil {
 		return "", err
 	}
-	var resp struct{ Items []apiZone }
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return "", err
-	}
-	for _, z := range resp.Items {
-		if strings.TrimSuffix(z.Properties.ZoneName, ".") == zone {
-			return z.ID, nil
-		}
-	}
-	return "", fmt.Errorf("ionoscloud: zone %q not found", zone)
-}
 
-// --- Record types ---
+	p.zonesMu.RLock()
+	id, ok := p.zones[zone]
+	p.zonesMu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("ionoscloud: zone %q not found", zone)
+	}
+	return id, nil
+}
 
 type apiRecord struct {
 	ID         string `json:"id,omitempty"`
@@ -177,26 +246,36 @@ type apiRecordCreate struct {
 	} `json:"properties"`
 }
 
-func toLibdns(r apiRecord, zone string) libdns.Record {
-	zone = strings.TrimSuffix(zone, ".")
-	name := strings.TrimSuffix(r.Properties.Name, "."+zone)
-	name = strings.TrimSuffix(name, ".")
-	return libdns.Record{
-		ID:    r.ID,
-		Type:  r.Properties.Type,
-		Name:  name,
-		Value: r.Properties.Content,
-		TTL:   time.Duration(r.Properties.TTL) * time.Second,
+func toLibdns(r apiRecord) libdns.Record {
+	rr := libdns.RR{
+		Name: r.Properties.Name,
+		Type: r.Properties.Type,
+		TTL:  time.Duration(r.Properties.TTL) * time.Second,
+		Data: r.Properties.Content,
 	}
+	rec, err := rr.Parse()
+	if err != nil {
+		return rr
+	}
+	return rec
 }
 
-func toFQDN(name, zone string) string {
-	zone = strings.TrimSuffix(zone, ".")
+// toRelative returns the relative record name for the IONOS API.
+// The IONOS Cloud DNS API expects relative names — it appends the zone automatically.
+func toRelative(name string) string {
 	name = strings.TrimSuffix(name, ".")
-	if name == "" || name == "@" {
-		return zone
+	if name == "@" {
+		return ""
 	}
-	return name + "." + zone
+	return name
+}
+
+func normalizeContent(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		s = s[1 : len(s)-1]
+	}
+	return s
 }
 
 func ttlOrDefault(ttl time.Duration) int {
@@ -207,13 +286,7 @@ func ttlOrDefault(ttl time.Duration) int {
 	return s
 }
 
-// --- libdns interface ---
-
-// GetRecords lists all records in the zone.
 func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	zoneID, err := p.findZoneID(ctx, zone)
 	if err != nil {
 		return nil, err
@@ -231,16 +304,14 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 
 	records := make([]libdns.Record, 0, len(resp.Items))
 	for _, r := range resp.Items {
-		records = append(records, toLibdns(r, zone))
+		records = append(records, toLibdns(r))
 	}
+
+	p.logger.Debug("fetched records", zap.String("zone", zone), zap.Int("count", len(records)))
 	return records, nil
 }
 
-// AppendRecords adds records to the zone.
 func (p *Provider) AppendRecords(ctx context.Context, zone string, records []libdns.Record) ([]libdns.Record, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	zoneID, err := p.findZoneID(ctx, zone)
 	if err != nil {
 		return nil, err
@@ -248,12 +319,16 @@ func (p *Provider) AppendRecords(ctx context.Context, zone string, records []lib
 
 	var created []libdns.Record
 	for _, rec := range records {
+		rr := rec.RR()
 		body := apiRecordCreate{}
-		body.Properties.Name = toFQDN(rec.Name, zone)
-		body.Properties.Type = rec.Type
-		body.Properties.Content = rec.Value
-		body.Properties.TTL = ttlOrDefault(rec.TTL)
+		body.Properties.Name = toRelative(rr.Name)
+		body.Properties.Type = rr.Type
+		body.Properties.Content = normalizeContent(rr.Data)
+		body.Properties.TTL = ttlOrDefault(rr.TTL)
 		body.Properties.Enabled = true
+
+		p.logger.Debug("creating record", zap.String("zone", zone), zap.String("name", body.Properties.Name), zap.String("type", rr.Type))
+
 		data, err := p.doAPI(ctx, http.MethodPost, fmt.Sprintf("/zones/%s/records", zoneID), body)
 		if err != nil {
 			return created, err
@@ -262,22 +337,17 @@ func (p *Provider) AppendRecords(ctx context.Context, zone string, records []lib
 		if err := json.Unmarshal(data, &result); err != nil {
 			return created, err
 		}
-		created = append(created, toLibdns(result, zone))
+		created = append(created, toLibdns(result))
 	}
 	return created, nil
 }
 
-// SetRecords sets records in the zone, replacing existing ones with matching name+type.
 func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns.Record) ([]libdns.Record, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	zoneID, err := p.findZoneID(ctx, zone)
 	if err != nil {
 		return nil, err
 	}
 
-	// Fetch existing for matching
 	data, err := p.doAPI(ctx, http.MethodGet, fmt.Sprintf("/zones/%s/records", zoneID), nil)
 	if err != nil {
 		return nil, err
@@ -289,27 +359,39 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns
 
 	var updated []libdns.Record
 	for _, rec := range records {
-		fqdn := toFQDN(rec.Name, zone)
+		rr := rec.RR()
+		relName := toRelative(rr.Name)
 		body := apiRecordCreate{}
-		body.Properties.Name = fqdn
-		body.Properties.Type = rec.Type
-		body.Properties.Content = rec.Value
-		body.Properties.TTL = ttlOrDefault(rec.TTL)
+		body.Properties.Name = relName
+		body.Properties.Type = rr.Type
+		body.Properties.Content = normalizeContent(rr.Data)
+		body.Properties.TTL = ttlOrDefault(rr.TTL)
 		body.Properties.Enabled = true
 
-		// Find existing by name+type
+		// Match by name+type+content first, then fall back to name+type only
+		content := normalizeContent(rr.Data)
 		var id string
 		for _, e := range existing.Items {
-			if e.Properties.Name == fqdn && e.Properties.Type == rec.Type {
+			if e.Properties.Name == relName && e.Properties.Type == rr.Type && normalizeContent(e.Properties.Content) == content {
 				id = e.ID
 				break
+			}
+		}
+		if id == "" {
+			for _, e := range existing.Items {
+				if e.Properties.Name == relName && e.Properties.Type == rr.Type {
+					id = e.ID
+					break
+				}
 			}
 		}
 
 		var respData []byte
 		if id != "" {
+			p.logger.Debug("updating record", zap.String("zone", zone), zap.String("name", relName), zap.String("type", rr.Type), zap.String("id", id))
 			respData, err = p.doAPI(ctx, http.MethodPut, fmt.Sprintf("/zones/%s/records/%s", zoneID, id), body)
 		} else {
+			p.logger.Debug("creating record via set", zap.String("zone", zone), zap.String("name", relName), zap.String("type", rr.Type))
 			respData, err = p.doAPI(ctx, http.MethodPost, fmt.Sprintf("/zones/%s/records", zoneID), body)
 		}
 		if err != nil {
@@ -320,53 +402,47 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns
 		if err := json.Unmarshal(respData, &result); err != nil {
 			return updated, err
 		}
-		updated = append(updated, toLibdns(result, zone))
+		updated = append(updated, toLibdns(result))
 	}
 	return updated, nil
 }
 
-// DeleteRecords deletes records from the zone.
 func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []libdns.Record) ([]libdns.Record, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	zoneID, err := p.findZoneID(ctx, zone)
 	if err != nil {
 		return nil, err
 	}
 
-	// Fetch existing if any records lack IDs
-	var existingRecords []apiRecord
-	for _, r := range records {
-		if r.ID == "" {
-			data, err := p.doAPI(ctx, http.MethodGet, fmt.Sprintf("/zones/%s/records", zoneID), nil)
-			if err != nil {
-				return nil, err
-			}
-			var resp struct{ Items []apiRecord }
-			if err := json.Unmarshal(data, &resp); err != nil {
-				return nil, fmt.Errorf("ionoscloud: unmarshal zone records: %w", err)
-			}
-			existingRecords = resp.Items
-			break
-		}
+	data, err := p.doAPI(ctx, http.MethodGet, fmt.Sprintf("/zones/%s/records", zoneID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var existing struct{ Items []apiRecord }
+	if err := json.Unmarshal(data, &existing); err != nil {
+		return nil, fmt.Errorf("ionoscloud: unmarshal zone records: %w", err)
 	}
 
 	var deleted []libdns.Record
 	for _, rec := range records {
-		id := rec.ID
-		if id == "" {
-			fqdn := toFQDN(rec.Name, zone)
-			for _, e := range existingRecords {
-				if e.Properties.Name == fqdn && e.Properties.Type == rec.Type && e.Properties.Content == rec.Value {
+		rr := rec.RR()
+		relName := toRelative(rr.Name)
+		content := normalizeContent(rr.Data)
+
+		var id string
+		for _, e := range existing.Items {
+			if e.Properties.Name == relName && e.Properties.Type == rr.Type {
+				if content == "" || normalizeContent(e.Properties.Content) == content {
 					id = e.ID
 					break
 				}
 			}
-			if id == "" {
-				continue
-			}
 		}
+		if id == "" {
+			continue
+		}
+
+		p.logger.Debug("deleting record", zap.String("zone", zone), zap.String("name", relName), zap.String("type", rr.Type), zap.String("id", id))
+
 		_, err := p.doAPI(ctx, http.MethodDelete, fmt.Sprintf("/zones/%s/records/%s", zoneID, id), nil)
 		if err != nil {
 			return deleted, err
