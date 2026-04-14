@@ -10,6 +10,17 @@ A [Caddy](https://caddyserver.com) DNS provider module for the [IONOS Cloud DNS 
 
 > **Important:** This module uses the **IONOS Cloud DNS API** (`dns.de-fra.ionos.com`), NOT the IONOS Hosting DNS API (`api.hosting.ionos.com`). These are completely different products with different authentication. If you use IONOS shared hosting, see [caddy-dns/ionos](https://github.com/caddy-dns/ionos) instead.
 
+## Features
+
+- Automatic TLS certificates via DNS-01 ACME challenges (including **wildcard** certs)
+- Full [libdns](https://github.com/libdns/libdns) implementation: `GetRecords`, `AppendRecords`, `SetRecords`, `DeleteRecords`
+- Caddyfile support with block and shorthand syntax
+- Environment variable substitution for secure token handling (`{$VAR}`, `{env.VAR}`)
+- Zone-ID caching with TTL to minimize API calls
+- Configurable API endpoint for custom or regional deployments
+- Structured error messages with no token leakage
+- Debug logging via Caddy's standard `zap.Logger`
+
 ## Prerequisites
 
 - Your domain's **NS records must point to IONOS Cloud nameservers** (`ns-ic.ui-dns.de`, `ns-ic.ui-dns.org`, `ns-ic.ui-dns.biz`, `ns-ic.ui-dns.com`). DNS-01 challenges will fail if the zone is not properly delegated.
@@ -26,7 +37,7 @@ xcaddy build --with github.com/JoschaP/caddy-dns-ionoscloud
 To pin a specific version:
 
 ```bash
-xcaddy build --with github.com/JoschaP/caddy-dns-ionoscloud@v0.1.0
+xcaddy build --with github.com/JoschaP/caddy-dns-ionoscloud@v1.0.0
 ```
 
 Or use Docker:
@@ -280,8 +291,8 @@ chmod 600 .credentials/*
 ## Releasing
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 This triggers the CI pipeline which runs tests and creates a GitHub Release.
