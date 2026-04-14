@@ -16,7 +16,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 
 ### Prerequisites
 
-- Go 1.22 or later
+- Go 1.22 or later (tested with 1.22, 1.23, 1.24)
 - An IONOS Cloud account (for integration tests)
 - An API token with DNS permissions (for integration tests)
 
@@ -29,6 +29,19 @@ go test -v -run TestCaddyfile
 # All tests (requires IONOS credentials)
 export IONOS_DNS_TOKEN="your-token"
 export IONOS_TEST_ZONE="your-test-zone.example.com"
+go test -v
+```
+
+You can also store credentials in a `.credentials/` directory (git-ignored):
+
+```bash
+mkdir -p .credentials
+echo "your-api-token-here" > .credentials/ionos_dns_token
+echo "your-test-zone.example.com" > .credentials/test_zone
+chmod 600 .credentials/*
+
+IONOS_DNS_TOKEN="$(cat .credentials/ionos_dns_token)" \
+IONOS_TEST_ZONE="$(cat .credentials/test_zone)" \
 go test -v
 ```
 
