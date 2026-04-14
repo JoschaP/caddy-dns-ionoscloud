@@ -175,11 +175,11 @@ type apiRecord struct {
 
 type apiRecordCreate struct {
 	Properties struct {
-		Name     string `json:"name"`
-		Type     string `json:"type"`
-		Content  string `json:"content"`
-		TTL      int    `json:"ttl"`
-		Enabled  bool   `json:"enabled"`
+		Name    string `json:"name"`
+		Type    string `json:"type"`
+		Content string `json:"content"`
+		TTL     int    `json:"ttl"`
+		Enabled bool   `json:"enabled"`
 	} `json:"properties"`
 }
 
