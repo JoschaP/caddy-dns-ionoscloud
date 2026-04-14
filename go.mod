@@ -1,4 +1,4 @@
-module github.com/jprasse/caddy-dns-ionoscloud
+module github.com/JoschaP/caddy-dns-ionoscloud
 
 go 1.22.3
 

@@ -1,7 +1,7 @@
 # IONOS Cloud DNS module for Caddy
 
-[![Go Tests](https://github.com/jprasse/caddy-dns-ionoscloud/actions/workflows/test.yml/badge.svg)](https://github.com/jprasse/caddy-dns-ionoscloud/actions/workflows/test.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/jprasse/caddy-dns-ionoscloud.svg)](https://pkg.go.dev/github.com/jprasse/caddy-dns-ionoscloud)
+[![Go Tests](https://github.com/JoschaP/caddy-dns-ionoscloud/actions/workflows/test.yml/badge.svg)](https://github.com/JoschaP/caddy-dns-ionoscloud/actions/workflows/test.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/JoschaP/caddy-dns-ionoscloud.svg)](https://pkg.go.dev/github.com/JoschaP/caddy-dns-ionoscloud)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 This package contains a DNS provider module for [Caddy](https://caddyserver.com). It can be used to manage DNS records with the [IONOS Cloud DNS API](https://dns.de-fra.ionos.com/swagger-ui) for automatic HTTPS certificate provisioning via DNS-01 ACME challenges.
@@ -20,14 +20,14 @@ This package contains a DNS provider module for [Caddy](https://caddyserver.com)
 ### Build with xcaddy
 
 ```bash
-xcaddy build --with github.com/jprasse/caddy-dns-ionoscloud
+xcaddy build --with github.com/JoschaP/caddy-dns-ionoscloud
 ```
 
 ### Docker
 
 ```dockerfile
 FROM caddy:2-builder AS builder
-RUN xcaddy build --with github.com/jprasse/caddy-dns-ionoscloud
+RUN xcaddy build --with github.com/JoschaP/caddy-dns-ionoscloud
 
 FROM caddy:2
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy

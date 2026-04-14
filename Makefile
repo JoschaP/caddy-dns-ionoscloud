@@ -25,4 +25,4 @@ check: lint
 
 # Build custom Caddy with this module
 build:
-	xcaddy build --with github.com/jprasse/caddy-dns-ionoscloud=.
+	xcaddy build --with github.com/JoschaP/caddy-dns-ionoscloud=.
