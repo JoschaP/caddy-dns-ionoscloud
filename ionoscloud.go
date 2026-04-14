@@ -34,7 +34,7 @@ import (
 const apiBase = "https://dns.de-fra.ionos.com"
 
 func init() {
-	caddy.RegisterModule(Provider{})
+	caddy.RegisterModule(&Provider{})
 }
 
 // Provider implements the libdns interfaces for the IONOS Cloud DNS API.
@@ -47,7 +47,7 @@ type Provider struct {
 }
 
 // CaddyModule returns the Caddy module information.
-func (Provider) CaddyModule() caddy.ModuleInfo {
+func (*Provider) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "dns.providers.ionoscloud",
 		New: func() caddy.Module { return new(Provider) },
