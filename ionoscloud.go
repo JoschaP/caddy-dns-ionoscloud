@@ -60,6 +60,7 @@ func (p *Provider) Provision(ctx caddy.Context) error {
 	if p.APIToken == "" {
 		return fmt.Errorf("ionoscloud: api_token is required")
 	}
+	p.client = &http.Client{Timeout: 30 * time.Second}
 	return nil
 }
 
@@ -92,13 +93,6 @@ func (p *Provider) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 
 // --- HTTP client ---
 
-func (p *Provider) httpClient() *http.Client {
-	if p.client == nil {
-		p.client = &http.Client{Timeout: 30 * time.Second}
-	}
-	return p.client
-}
-
 func (p *Provider) doAPI(ctx context.Context, method, path string, body interface{}) ([]byte, error) {
 	var reqBody io.Reader
 	if body != nil {
@@ -116,7 +110,7 @@ func (p *Provider) doAPI(ctx context.Context, method, path string, body interfac
 	req.Header.Set("Authorization", "Bearer "+p.APIToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := p.httpClient().Do(req)
+	resp, err := p.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("ionoscloud: %s %s: %w", method, path, err)
 	}
@@ -350,7 +344,9 @@ func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []lib
 				return nil, err
 			}
 			var resp struct{ Items []apiRecord }
-			json.Unmarshal(data, &resp)
+			if err := json.Unmarshal(data, &resp); err != nil {
+				return nil, fmt.Errorf("ionoscloud: unmarshal zone records: %w", err)
+			}
 			existingRecords = resp.Items
 			break
 		}
