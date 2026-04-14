@@ -2,6 +2,8 @@
 
 [![Go Tests](https://github.com/JoschaP/caddy-dns-ionoscloud/actions/workflows/test.yml/badge.svg)](https://github.com/JoschaP/caddy-dns-ionoscloud/actions/workflows/test.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/JoschaP/caddy-dns-ionoscloud.svg)](https://pkg.go.dev/github.com/JoschaP/caddy-dns-ionoscloud)
+[![Go Report Card](https://goreportcard.com/badge/github.com/JoschaP/caddy-dns-ionoscloud)](https://goreportcard.com/report/github.com/JoschaP/caddy-dns-ionoscloud)
+[![codecov](https://codecov.io/gh/JoschaP/caddy-dns-ionoscloud/branch/main/graph/badge.svg)](https://codecov.io/gh/JoschaP/caddy-dns-ionoscloud)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 This package contains a DNS provider module for [Caddy](https://caddyserver.com). It can be used to manage DNS records with the [IONOS Cloud DNS API](https://dns.de-fra.ionos.com/swagger-ui) for automatic HTTPS certificate provisioning via DNS-01 ACME challenges.

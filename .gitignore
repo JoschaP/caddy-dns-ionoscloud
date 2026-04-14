@@ -1,2 +1,15 @@
+# Credentials
 .env
+.env.*
+.envrc
+
+# Build artifacts
+caddy
 *.test
+
+# Go
+vendor/
+
+# OS
+.DS_Store
+Thumbs.db
