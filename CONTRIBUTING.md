@@ -16,7 +16,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 
 ### Prerequisites
 
-- Go 1.22 or later (tested with 1.22, 1.23, 1.24)
+- Go 1.25 or later
 - An IONOS Cloud account (for integration tests)
 - An API token with DNS permissions (for integration tests)
 

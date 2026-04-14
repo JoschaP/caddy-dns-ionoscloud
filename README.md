@@ -262,7 +262,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
 
 ### Prerequisites
 
-- Go 1.22+ (tested with 1.22, 1.23, 1.24)
+- Go 1.25+
 - An IONOS Cloud account with DNS zones (for integration tests)
 
 ### Run Tests
