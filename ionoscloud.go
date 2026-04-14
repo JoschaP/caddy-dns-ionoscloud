@@ -141,7 +141,7 @@ func (p *Provider) doAPI(ctx context.Context, method, path string, body interfac
 	if err != nil {
 		return nil, fmt.Errorf("ionoscloud: %s %s: %w", method, path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {

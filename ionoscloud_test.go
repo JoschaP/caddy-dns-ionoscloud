@@ -202,7 +202,9 @@ func TestRecordNameNotDoubled(t *testing.T) {
 		t.Fatalf("AppendRecords: %v", err)
 	}
 	t.Cleanup(func() {
-		p.DeleteRecords(ctx, zone, created)
+		if _, err := p.DeleteRecords(ctx, zone, created); err != nil {
+			t.Logf("cleanup failed: %v", err)
+		}
 	})
 
 	// Verify the record is retrievable via GetRecords with the correct name
