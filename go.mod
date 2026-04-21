@@ -6,7 +6,7 @@ require (
 	github.com/caddyserver/caddy/v2 v2.11.2
 	github.com/libdns/libdns v1.1.1
 	go.uber.org/zap v1.27.1
-	golang.org/x/sync v0.19.0
+	golang.org/x/sync v0.20.0
 )
 
 require (
